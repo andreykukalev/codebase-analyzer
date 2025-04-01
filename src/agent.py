@@ -1,6 +1,6 @@
 import os
 import git
-from pathlib import Path
+from pathlib import Path, WindowsPath
 from state import State
 from nodes.extractor import ExtractNode
 from nodes.reporter import ReporterNode
@@ -9,7 +9,8 @@ from utils.clients import OpenAIClient
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 
-CLONE_DIR = Path(__file__).absolute().parent / "clone";
+CLONE_DIR = Path(__file__).absolute().parent / "clone" / "eeazycrm";
+REPORT_DIR = Path(__file__).absolute().parent / "report" / "eeazycrm";
 
 def clone_repository(ssh_repo_url: str, clone_dir: str):
     """Clones a Git repository to the specified directory."""
@@ -24,7 +25,7 @@ def clone_repository(ssh_repo_url: str, clone_dir: str):
 def get_graph_builder() -> StateGraph:
     extractNode = ExtractNode()
     analyzerNode = AnalyzerNode(OpenAIClient.get_instance())
-    reporterNode = ReporterNode()
+    reporterNode = ReporterNode(OpenAIClient.get_instance())
 
     graph_builder = StateGraph(State)
     graph_builder.add_node("extract", extractNode)
@@ -38,22 +39,38 @@ def get_graph_builder() -> StateGraph:
 
     return graph_builder
 
-def run(): 
-    graph_builder = get_graph_builder()
-    while True:
-        try:
-            user_input = input("Provide SSH link for repository: ")
-            if user_input.lower() in ["quit", "exit", "q"]:
-                print("Goodbye!")
-                break
+def create_if_not_exists(path: WindowsPath) -> bool:
+    """Ensures that specified folder existst."""
+    if not os.path.exists(path):
+        os.makedirs(path)
 
-            clone_repository(user_input, CLONE_DIR)
-            graph = graph_builder.compile()
-            graph.invoke({"message": "initial_state"})
-        except:
-            # fallback if input() is not available
-            print("Error!")
-            break
+def ensure_extension(filename: str, extension: str) -> str:
+    """Ensures the filename has the given extension."""
+    extension = extension if extension.startswith('.') else f'.{extension}'
+    
+    if not filename.lower().endswith(extension.lower()):
+        filename += extension
+    
+    return filename
+
+def run():
+    create_if_not_exists(CLONE_DIR) 
+    create_if_not_exists(REPORT_DIR)
+    
+    state_graph = get_graph_builder().compile()
+
+    try:
+        #clone_repository(user_input, CLONE_DIR)
+        report_name = input("Provide report name:")
+        report_name = ensure_extension(report_name, "md")
+
+        state_graph.invoke({
+            "codebase_local_path": CLONE_DIR,
+            "report_local_path": REPORT_DIR / report_name
+        })
+    except Exception as e:
+        # fallback if input() is not available
+        print(f"Error! {e}")
 
 if __name__ == "__main__":
     load_dotenv()
