@@ -1,161 +1,171 @@
-import ast
 import os
-from typing import Dict, Optional, Set
+import ast
+from typing import Dict, List
+from pathlib import Path
 
 class CodebaseAnalyzer:
     def __init__(self):
-        self.classes = {}  # file:class_name -> class_info
-        self.imports = {}  # file -> set of imported names
-        self.file_trees = {}  # file -> AST
+        self.classes = {}
+        self.file_trees = {}
 
-    def analyze_file(self, file_path: str) -> Optional[ast.AST]:
-        """Analyze a single Python file, track imports, and return the AST."""
+    def analyze_file(self, file_path: str) -> ast.AST:
+        """Analyzes single source code file utilizing AST parser."""
         try:
             with open(file_path, 'r', encoding='utf-8') as file:
                 source = file.read()
                 tree = ast.parse(source)
                 self.file_trees[file_path] = tree
                 self._extract_classes(tree, file_path)
-                self._extract_imports(tree, file_path)
                 return tree
         except Exception as e:
             print(f"Error analyzing {file_path}: {str(e)}")
             return None
 
     def _extract_classes(self, tree: ast.AST, file_path: str) -> None:
-        """Extract class information from the AST."""
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 class_info = self._extract_class_info(node, file_path)
                 self.classes[f"{file_path}:{class_info['name']}"] = class_info
 
     def _extract_class_info(self, node: ast.ClassDef, file_path: str) -> Dict:
-        """Extract information from a class definition."""
         class_info = {
             'name': node.name,
             'file': file_path,
             'line': node.lineno,
             'methods': [],
-            'bases': [base.id if isinstance(base, ast.Name) else str(base) 
-                     for base in node.bases]
+            'bases': [base.id if isinstance(base, ast.Name) else str(base) for base in node.bases]
         }
-
         for item in node.body:
             if isinstance(item, ast.FunctionDef):
                 method_info = self._extract_method_info(item)
                 class_info['methods'].append(method_info)
-
         return class_info
 
     def _extract_method_info(self, node: ast.FunctionDef) -> Dict:
-        """Extract information from a method definition."""
+        """Extract method info, safely handling args and returns."""
         args = []
         for arg in node.args.args:
-            arg_info = {
-                'name': arg.arg,
-                'type': (ast.unparse(arg.annotation) 
-                        if arg.annotation else None)
-            }
-            args.append(arg_info)
-
-        return_type = (ast.unparse(node.returns) 
-                      if node.returns else None)
-
+            arg_type = None
+            if arg.annotation:
+                try:
+                    arg_type = ast.unparse(arg.annotation)
+                except Exception:
+                    arg_type = None  # Fallback if unparse fails
+            args.append({'name': arg.arg, 'type': arg_type})
+        
+        return_type = None
+        if node.returns:
+            try:
+                return_type = ast.unparse(node.returns)
+            except Exception:
+                return_type = None  # Fallback if unparse fails
+        
         return {
             'name': node.name,
             'line': node.lineno,
             'args': args,
             'return_type': return_type,
-            'docstring': ast.get_docstring(node)
+            'docstring': ast.get_docstring(node),
+            'calls': self._extract_method_calls(node)
         }
 
-    def _extract_imports(self, tree: ast.AST, file_path: str) -> None:
-        """Extract import statements to track dependencies."""
-        imported_names = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for name in node.names:
-                    imported_names.add(name.name.split('.')[0])  # Top-level module/class
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    imported_names.add(node.module.split('.')[0])
-                for name in node.names:
-                    imported_names.add(name.name)
-        self.imports[file_path] = imported_names
+    def _extract_method_calls(self, node: ast.FunctionDef) -> List[str]:
+        calls = []
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                if isinstance(child.func, ast.Name):
+                    calls.append(child.func.id)
+                elif isinstance(child.func, ast.Attribute):
+                    calls.append(child.func.attr)
+        return calls
 
     def analyze_directory(self, directory: str) -> Dict[str, ast.AST]:
-        """Analyze all Python files in a directory and return file -> AST mapping."""
+        """Scans codebase directory and processes python files."""
+
         for root, _, files in os.walk(directory):
             for file in files:
                 if file.endswith('.py'):
-                    full_path = os.path.join(root, file)
-                    self.analyze_file(full_path)
+                    self.analyze_file(os.path.join(root, file))
         return self.file_trees
 
-    def resolve_dependencies(self) -> Dict[str, Set[str]]:
-        """Resolve class dependencies across files based on imports and bases."""
-        dependencies = {}
-        for file_path, class_info_dict in self.classes.items():
-            class_name = class_info_dict['name']
-            bases = class_info_dict['bases']
-            deps = set()
-            
-            # Check imports in this file
-            file_imports = self.imports.get(file_path, set())
-            
-            # Match bases with imported names or classes in other files
-            for base in bases:
-                # Check if base is imported from another file
-                if base in file_imports:
-                    deps.add(base)
-                # Check if base is a class defined in another file
-                for other_file, other_info in self.classes.items():
-                    if other_file != file_path and other_info['name'] == base:
-                        deps.add(f"{other_file}:{base}")
-            
-            dependencies[f"{file_path}:{class_name}"] = deps
-        return dependencies
+    def write_trees_to_files(self, output_dir: Path) -> None:
+        """Writes all extracted AST trees and collected class data to separate files."""
 
-    def print_analysis(self) -> None:
-        """Print the analyzed class and method information."""
-        for class_key, class_info in self.classes.items():
-            print(f"\nClass: {class_info['name']}")
-            print(f"File: {class_info['file']} (line {class_info['line']})")
+        if not self.file_trees:
+            print("No data available to write.")
+            return
+
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Group classes by file
+        classes_by_file = {}
+        for key, class_info in self.classes.items():
+            file_path = class_info['file']
+            if file_path not in classes_by_file:
+                classes_by_file[file_path] = []
+            classes_by_file[file_path].append(class_info)
+
+        # Write data for each file
+        for file_path in self.file_trees:
+            base_name = os.path.basename(file_path).replace('.py', '')
+
+            # Write AST
+            ast_output_file = os.path.join(output_dir, f"{base_name}_ast.txt")
+            ast_text = ast.dump(self.file_trees[file_path], indent=2)
+            with open(ast_output_file, 'w', encoding='utf-8') as f:
+                f.write(ast_text)
+            print(f"AST for {file_path} written to {ast_output_file}")
+
+            # Write class data
+            class_output_file = os.path.join(output_dir, f"{base_name}_classes.txt")
+            with open(class_output_file, 'w', encoding='utf-8') as f:
+                if file_path in classes_by_file:
+                    for class_info in classes_by_file[file_path]:
+                        f.write(f"Class: {class_info['name']}\n")
+                        f.write(f"Line: {class_info['line']}\n")
+                        if class_info['bases']:
+                            f.write(f"Inherits from: {', '.join(class_info['bases'])}\n")
+                        if class_info['methods']:
+                            f.write("Methods:\n")
+                            for method in class_info['methods']:
+                                f.write(f"  {method['name']} (line {method['line']})\n")
+                                if method['args']:
+                                    args_str = ', '.join(
+                                        f"{arg['name']}: {arg['type'] or 'Any'}" 
+                                        for arg in method['args']
+                                    )
+                                    f.write(f"    Args: {args_str}\n")
+                                if method['return_type']:
+                                    f.write(f"    Returns: {method['return_type']}\n")
+                                if method['docstring']:
+                                    f.write(f"    Docstring: {method['docstring']}\n")
+                        f.write("\n")
+                else:
+                    f.write("No classes found in this file.\n")
+            print(f"Class data for {file_path} written to {class_output_file}")
+
+    @staticmethod
+    def serialize_classes_to_string(classes: Dict) -> str:
+        """Serializes the dictionary with classes info structure to a string."""
+
+        if not classes:
+            return "Classes: None"
+
+        lines = ["Classes:"]
+        for class_key, class_info in classes.items():
+            class_str = (f"- {class_key} (name: {class_info['name']}, file: {class_info['file']}, "
+                        f"line: {class_info['line']})")
+            lines.append(class_str)
             if class_info['bases']:
-                print(f"Inherits from: {', '.join(class_info['bases'])}")
-            
+                lines.append(f"  Inherits: {', '.join(class_info['bases'])}")
             if class_info['methods']:
-                print("Methods:")
+                lines.append("  Methods:")
                 for method in class_info['methods']:
-                    print(f"  {method['name']} (line {method['line']})")
-                    if method['args']:
-                        args_str = ', '.join(
-                            f"{arg['name']}: {arg['type'] or 'Any'}" 
-                            for arg in method['args']
-                        )
-                        print(f"    Args: {args_str}")
-                    if method['return_type']:
-                        print(f"    Returns: {method['return_type']}")
-                    if method['docstring']:
-                        print(f"    Docstring: {method['docstring']}")
-        """Print the analyzed class and method information."""
-        for class_key, class_info in self.classes.items():
-            print(f"\nClass: {class_info['name']}")
-            print(f"File: {class_info['file']} (line {class_info['line']})")
-            if class_info['bases']:
-                print(f"Inherits from: {', '.join(class_info['bases'])}")
-            
-            if class_info['methods']:
-                print("Methods:")
-                for method in class_info['methods']:
-                    print(f"  {method['name']} (line {method['line']})")
-                    if method['args']:
-                        args_str = ', '.join(
-                            f"{arg['name']}: {arg['type'] or 'Any'}" 
-                            for arg in method['args']
-                        )
-                        print(f"    Args: {args_str}")
-                    if method['return_type']:
-                        print(f"    Returns: {method['return_type']}")
-                    if method['docstring']:
-                        print(f"    Docstring: {method['docstring']}")
+                    method_str = (f"    - {method['name']} (args: {', '.join(f"{arg['name']}:{arg['type'] or 'Any'}" for arg in method['args'])}, "
+                                 f"returns: {method['return_type'] or 'None'}, "
+                                 f"docstring: {method['docstring'] or 'None'})")
+                    lines.append(method_str)
+                    if method['calls']:
+                        lines.append(f"      Calls: {', '.join(method['calls'])}")
+        return "\n".join(lines)

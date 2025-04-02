@@ -5,7 +5,7 @@ class OpenAIClient:
     _instance = None
 
     @classmethod
-    def get_instance(cls):
+    def get_instance(cls) -> ChatOpenAI:
         if cls._instance is None:
             cls._instance = ChatOpenAI(
                 model=os.getenv("MODEL_NAME"), 
