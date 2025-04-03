@@ -7,6 +7,21 @@ Legacy codebases often present significant challenges due to their complexity an
 ### 💡 Solution Approach
 To address these challenges, we employ a hybrid approach that integrates traditional heuristic techniques with advanced Generative AI (GenAI) capabilities. This combination allows for a deeper and more thorough understanding of the codebase, ensuring alignment with business requirements.
 
+### 🛠 How It Works
+The agent follows a structured three-step process to analyze the codebase and extract meaningful insights:
+
+### 1️⃣ Codebase Analysis
+- Utilize Abstract Syntax Tree (AST) parsers to extract classes and methods, including their definitions, names, arguments, and return types.
+- Construct a directed graph representing the relationships between methods, capturing method arguments and return types.
+
+### 2️⃣ GenAI Analysis
+- Leverage a Large Language Model (LLM) to analyze method invocation paths and contextual information.
+- Extract business requirements or functional descriptions from the code by prompting the LLM with the gathered data.
+
+### 3️⃣ Report Generation
+- Compile a structured report documenting all extracted business requirements.
+- Provide references to the corresponding sections of the analyzed codebase for traceability and validation.
+
 ## 🚀 Getting Started
 This section provides instructions on how to set up the project locally.
 
